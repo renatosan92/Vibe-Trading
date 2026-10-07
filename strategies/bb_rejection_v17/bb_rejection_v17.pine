@@ -1,0 +1,63 @@
+//@version=6
+// BB Rejection v17 — MNQ, 15-minute chart
+// Candle A pierces a Bollinger Band with an extreme stochastic, Candle B confirms
+// with an opposite-colour body, and the trade is entered at the open of Candle C.
+strategy("BB Rejection v17", overlay = true,
+     default_qty_type = strategy.fixed, default_qty_value = 15,
+     pyramiding = 0, calc_on_every_tick = false, process_orders_on_close = false)
+
+// ── Inputs ────────────────────────────────────────────────────────────────────
+bbLen     = input.int(20,    "BB period")
+bbMult    = input.float(2.0, "BB std dev", step = 0.1)
+stLen     = input.int(14,    "Stoch %K length")
+stSmooth  = input.int(1,     "Stoch %K smoothing")
+stD       = input.int(3,     "Stoch %D smoothing")
+stHigh    = input.float(80,  "Short: stoch above")
+stLow     = input.float(10,  "Long: stoch below")
+tpTicks   = input.int(135,   "Take profit (ticks)")
+slTicks   = input.int(265,   "Stop loss (ticks)")
+tz        = "America/New_York"
+
+// ── Indicators ────────────────────────────────────────────────────────────────
+[bbMid, bbUp, bbLo] = ta.bb(close, bbLen, bbMult)
+k = ta.sma(ta.stoch(close, high, low, stLen), stSmooth)
+d = ta.sma(k, stD)   // plotted only; the rules use %K
+
+plot(bbMid, "BB mid", color.gray)
+plot(bbUp,  "BB upper", color.red)
+plot(bbLo,  "BB lower", color.green)
+
+// ── Pattern (evaluated on the close of Candle B = current bar; A = bar[1]) ──
+shortA = high[1] >= bbUp[1] and k[1] > stHigh
+longA  = low[1]  <= bbLo[1] and k[1] < stLow
+bRed   = close < open
+bGreen = close > open
+
+// Candle C opens when this bar closes: its open time must be in 10:00–16:00 NY.
+cOpenMin = hour(time_close, tz) * 60 + minute(time_close, tz)
+inWindow = cOpenMin >= 10 * 60 and cOpenMin < 16 * 60
+
+// ── One trade per NY day ──────────────────────────────────────────────────────
+nyDay = dayofmonth(time, tz)
+var int tradesToday = 0
+if nyDay != nyDay[1]
+    tradesToday := 0
+
+flat = strategy.position_size == 0
+canTrade = flat and inWindow and tradesToday < 1
+
+if canTrade and shortA and bRed
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short X", "Short", profit = tpTicks, loss = slTicks)
+    tradesToday += 1
+else if canTrade and longA and bGreen
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long X", "Long", profit = tpTicks, loss = slTicks)
+    tradesToday += 1
+
+// ── Forced exit at 16:00 NY (fills at the open of the 16:00 bar) ──────────────
+if strategy.position_size != 0 and cOpenMin >= 16 * 60
+    strategy.close_all(comment = "16:00 flat")
+
+plotshape(canTrade and shortA and bRed, "Short signal", shape.triangledown, location.abovebar, color.red,   size = size.small)
+plotshape(canTrade and longA  and bGreen, "Long signal", shape.triangleup,   location.belowbar, color.green, size = size.small)
