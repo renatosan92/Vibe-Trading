@@ -16,7 +16,7 @@ TradingView Pine Script port.
 | Time exit | Flat by 15:50 ET |
 | Trades per day | 1 |
 | News filter | Skip FOMC and CPI days (`news.py`) |
-| Size | Contracts so the stop costs about $750, max 50 MNQ |
+| Size | Contracts so the stop costs about $750 in the evaluation, max 40 MNQ (LucidFlex cap). Half that risk once funded |
 | Costs | $1.50 round turn per contract, 1 tick slippage on entries, stops and time exits |
 
 The fill model is conservative: when one bar touches both the stop and the
@@ -42,6 +42,8 @@ passed within 40 sessions (about two monthly fees).
 
 | Rules | Period | Pass | Fail | Median sessions to pass | Same trades with zero edge |
 |---|---|---|---|---|---|
+| **LucidFlex** | 2023-24 | 50% | 49% | 17 | 20% |
+| **LucidFlex** | **2025** | **38%** | 56% | 21 | 33% |
 | Topstep-style | 2023-24 | 49% | 49% | 18 | 20% |
 | Topstep-style | **2025** | **38%** | 56% | 21 | 33% |
 | Apex-style | 2023-24 | 50% | 49% | 17 | 23% |
@@ -55,9 +57,15 @@ Risk per trade is the biggest lever. At $500 risk the account fails less but
 passes slower (25% pass, 29% fail, 46% still running after 40 sessions; with no
 time limit about 47% pass overall). At $1,000 risk failures jump to 68% or more.
 
-Funded phase: of the evaluations that passed in 2023-24, about 60% reached at
-least one payout within the next 120 sessions under the generic payout model in
-`propfirm.py` (5 winning days of $150+, withdraw up to 50% of profit).
+Funded phase (LucidFlex rules, funded account traded at half the evaluation
+risk, 120 sessions): across the full sample 76% of passed accounts collected at
+least one payout, averaging 1.3 payouts and $941 to the trader, but 86% of them
+were eventually blown. The LucidFlex rule that moves the loss limit to $50,100
+after every payout leaves little room, so most funded accounts end after one or
+two payouts. In 2025 only 44 passed accounts had 60 sessions left to test, and
+25% of those reached a payout, so the 2025 funded numbers are thin and weak.
+Trading the funded account at full evaluation risk blew it more often for about
+the same payouts; at a quarter of the risk it survived longer but paid less.
 
 ### What this means
 
@@ -75,9 +83,19 @@ least one payout within the next 120 sessions under the generic payout model in
 
 ## Prop rules modelled
 
-Both presets in `propfirm.py` approximate published 50K plans. Firms change
+All presets in `propfirm.py` approximate published 50K plans; `lucidflex_50k`
+is the default. Firms change
 their rules often, so check your firm's rulebook and edit `PropRules`.
 
+* `lucidflex_50k` (Lucid Trading help center and rule summaries, checked
+  2026-11-03): $3,000 target, $2,000 loss limit trailing the end-of-day balance
+  and locking at $50,100 once the balance passes $52,100, no daily loss limit
+  (it is an optional add-on; set `daily_loss` if you bought it), 50% consistency
+  in the evaluation only, 40 micros max. Funded: payout after 5 days of $150+
+  with positive cycle profit, request 50% of profit up to $2,000 (minimum $500),
+  90% split, loss limit moves to $50,100 after each payout, live review after 5
+  payouts. The funded scaling plan (2 to 4 minis by profit) is not modelled; at
+  $375-750 risk the strategy trades 2-6 micros, well under it.
 * `topstep_50k`: $3,000 target, $2,000 maximum loss trailing the end-of-day
   balance and locking at the start balance, $1,000 daily loss limit (stops the
   day, does not fail the account), best day under 50% of profit.
@@ -98,7 +116,7 @@ is what that file uses).
 python -m strategies.orb_mnq.report --data nq_1m.csv              # recommended settings
 python -m strategies.orb_mnq.report --data nq_1m.csv --risk 500   # other risk sizes
 python -m strategies.orb_mnq.run_backtest --data nq_1m.csv        # full grid search (about 15 min)
-python -m strategies.orb_mnq.run_backtest --data nq_1m.csv --preset apex_50k
+python -m strategies.orb_mnq.run_backtest --data nq_1m.csv --preset topstep_50k
 pytest strategies/orb_mnq/tests
 ```
 

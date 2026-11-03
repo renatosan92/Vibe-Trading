@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import numpy as np
@@ -99,3 +100,16 @@ def test_daily_loss_limit_caps_the_day():
     a = Account(PropRules(name="t", daily_loss=1_000))
     pnl, blown = a.trade_day([_t(-700), _t(-700)])
     assert not blown and pnl == -1_000
+
+
+def test_lucidflex_floor_locks_at_50100_and_resets_after_payout():
+    from strategies.orb_mnq.propfirm import PRESETS, run_funded
+    r = PRESETS["lucidflex_50k"]
+    a = Account(r)
+    a.trade_day([_t(2_200)])
+    assert a.floor == 50_100  # peak 52,200 - 2,000 would be 50,200, but it locks at 50,100
+    days = [date(2024, 1, d) for d in range(1, 8)]
+    tbd = {d: [replace(_t(400), day=d)] for d in days[:5]}
+    res = run_funded(days, tbd, 0, r, horizon=7)
+    # 5 days of +$400 = $2,000 profit -> request 50% = $1,000, trader keeps 90%
+    assert res.payouts == 1 and res.withdrawn == 900

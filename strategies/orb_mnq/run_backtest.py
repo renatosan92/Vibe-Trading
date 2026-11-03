@@ -66,7 +66,7 @@ def main() -> None:
     ap.add_argument("--data", required=True)
     ap.add_argument("--label", default="end", choices=["start", "end"])
     ap.add_argument("--split", default="2025-01-01", help="first out-of-sample day")
-    ap.add_argument("--preset", default="topstep_50k", choices=sorted(PRESETS))
+    ap.add_argument("--preset", default="lucidflex_50k", choices=sorted(PRESETS))
     ap.add_argument("--risk", type=float, default=0, help="$ risk per trade (0 = search 300/500/750)")
     ap.add_argument("--min-trades", type=int, default=120)
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "results"))

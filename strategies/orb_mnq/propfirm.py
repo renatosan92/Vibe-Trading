@@ -1,9 +1,10 @@
 """Prop-firm evaluation and funded-account simulator.
 
-Rules differ by firm and change often, so both presets below are
+Rules differ by firm and change often, so the presets below are
 approximations of the published 50K plans as of late 2025. Check your firm's
 current rulebook and edit ``PropRules`` to match before trusting a pass rate.
 
+* lucidflex_50k: see the comment on the preset (the rules this project trades).
 * topstep_50k: $3,000 target, $2,000 maximum loss that trails the END-OF-DAY
   balance high and stops trailing once it reaches the starting balance, $1,000
   daily loss limit (trading stops for the day, account survives), best day
@@ -48,15 +49,31 @@ class PropRules:
     payout_cap: float = 5_000.0
     payout_min: float = 250.0  # smaller requests are not worth making
     trader_split: float = 0.9  # trader keeps 90% of each payout
+    funded_trail_lock: float | None = 0.0  # funded floor lock (None = same as evaluation)
+    post_payout_floor: float | None = None  # floor after a payout, as start + this (None = unchanged)
+    max_payouts: int = 0  # stop counting after this many payouts (0 = no limit)
 
 
 PRESETS = {
+    # LucidFlex 50K (Lucid Trading help center and rule summaries, checked 2026-11-03):
+    # $3,000 target, $2,000 EOD trailing loss limit that locks at $50,100 once the
+    # balance passes $52,100, no daily loss limit by default (it is an optional
+    # add-on), 50% consistency in the evaluation only, max 4 minis / 40 micros.
+    # Funded: no consistency, payout after 5 days of $150+ with positive cycle
+    # profit, request 50% of profit capped at $2,000 and at least $500, 90% split,
+    # the loss limit moves to $50,100 after a payout, live review after 5 payouts.
+    "lucidflex_50k": PropRules(
+        name="lucidflex_50k", trail_lock=100.0, daily_loss=0.0, consistency=0.5, min_days=1,
+        payout_win_days=5, payout_win_threshold=150.0, payout_frac=0.5, payout_cap=2_000.0,
+        payout_min=500.0, trader_split=0.9, funded_trail_lock=None, post_payout_floor=100.0,
+        max_payouts=5,
+    ),
     "topstep_50k": PropRules(name="topstep_50k"),
     "apex_50k": PropRules(
         name="apex_50k", max_dd=2_500.0, trailing="intraday", trail_lock=100.0,
         daily_loss=0.0, consistency=0.0, min_days=1,
         payout_win_days=8, payout_win_threshold=50.0, payout_frac=0.5,
-        payout_cap=2_000.0, payout_min=500.0, trader_split=1.0,
+        payout_cap=2_000.0, payout_min=500.0, trader_split=1.0, funded_trail_lock=None,
     ),
 }
 
@@ -154,10 +171,17 @@ class FundedResult:
 
 
 def run_funded(days: list[date], tbd: dict[date, list[Trade]], start_idx: int,
-               r: PropRules, horizon: int = 120) -> FundedResult:
-    """Trade a funded account for up to ``horizon`` sessions, taking payouts."""
-    funded = replace(r, trail_lock=0.0) if r.trailing == "eod" else r
+               r: PropRules, horizon: int = 120, risk_scale: float = 1.0) -> FundedResult:
+    """Trade a funded account for up to ``horizon`` sessions, taking payouts.
+
+    ``risk_scale`` resizes every trade (0.5 = half the evaluation risk), a
+    common way to protect a funded account.
+    """
+    funded = r if r.funded_trail_lock is None else replace(r, trail_lock=r.funded_trail_lock)
     acct = Account(funded)
+    if risk_scale != 1.0:
+        tbd = {d: [replace(t, pnl=t.pnl * risk_scale, mae=t.mae * risk_scale, mfe=t.mfe * risk_scale)
+                   for t in ts] for d, ts in tbd.items()}
     win_days = 0
     payouts, withdrawn = 0, 0.0
     end = min(len(days), start_idx + horizon)
@@ -175,13 +199,16 @@ def run_funded(days: list[date], tbd: dict[date, list[Trade]], start_idx: int,
                 withdrawn += amount * r.trader_split
                 payouts += 1
                 win_days = 0
-                # after the first payout the floor locks at the starting balance
-                acct.floor = max(acct.floor, r.start - r.max_dd)
+                if r.post_payout_floor is not None:
+                    acct.floor = r.start + r.post_payout_floor
+                    acct.lock = acct.floor
+                if r.max_payouts and payouts >= r.max_payouts:
+                    break
     return FundedResult(payouts, withdrawn, False, end - start_idx)
 
 
 def pass_rate(trades: list[Trade], days: list[date], r: PropRules, step: int = 1,
-              funded_horizon: int = 120, max_days: int = 40) -> dict:
+              funded_horizon: int = 120, max_days: int = 40, funded_risk_scale: float = 1.0) -> dict:
     """Start a fresh evaluation on every ``step``-th session and report outcomes.
 
     ``max_days`` (default 40 sessions, about two months of evaluation fees)
@@ -194,7 +221,7 @@ def pass_rate(trades: list[Trade], days: list[date], r: PropRules, step: int = 1
         res, end_j = run_evaluation(days, tbd, i, r, max_days)
         evals.append(res)
         if res.outcome == "pass" and end_j + 1 + funded_horizon <= len(days):
-            funded.append(run_funded(days, tbd, end_j + 1, r, funded_horizon))
+            funded.append(run_funded(days, tbd, end_j + 1, r, funded_horizon, funded_risk_scale))
     closed = [e for e in evals if e.outcome != "open"]
     passed = [e for e in closed if e.outcome == "pass"]
     failed = [e for e in closed if e.outcome == "fail"]

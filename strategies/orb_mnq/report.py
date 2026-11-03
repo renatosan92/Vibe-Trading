@@ -36,7 +36,9 @@ RECOMMENDED = ORBParams(
     max_trades=1,
     news=NEWS_SETS["fomc_cpi"],
     risk_dollars=750.0,
+    max_contracts=40,  # LucidFlex 50K cap: 4 minis / 40 micros
 )
+FUNDED_RISK_SCALE = 0.5  # trade the funded account at half the evaluation risk
 
 
 def zero_edge(trades):
@@ -44,12 +46,12 @@ def zero_edge(trades):
     return [replace(t, pnl=t.pnl - m, mae=t.mae - max(m, 0.0), mfe=max(0.0, t.mfe - m)) for t in trades]
 
 
-def score(sessions, p, rules):
+def score(sessions, p, rules, funded_scale=FUNDED_RISK_SCALE):
     days = [s.day for s in sessions]
     trades = run(sessions, p)
     st = stats(trades, len(days))
     if st["trades"]:
-        st.update(pass_rate(trades, days, rules))
+        st.update(pass_rate(trades, days, rules, funded_risk_scale=funded_scale))
         st["zero_edge_pass_rate"] = pass_rate(zero_edge(trades), days, rules)["pass_rate"]
     return st, trades
 
@@ -60,6 +62,8 @@ def main() -> None:
     ap.add_argument("--label", default="end", choices=["start", "end"])
     ap.add_argument("--split", default="2025-01-01")
     ap.add_argument("--risk", type=float, default=0)
+    ap.add_argument("--funded-scale", type=float, default=FUNDED_RISK_SCALE,
+                    help="funded-account risk as a share of evaluation risk")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "results"))
     args = ap.parse_args()
 
@@ -81,13 +85,13 @@ def main() -> None:
     rows = []
     for preset, rules in PRESETS.items():
         for name, part in parts.items():
-            st, trades = score(part, p, rules)
+            st, trades = score(part, p, rules, args.funded_scale)
             report["results"].setdefault(preset, {})[name] = st
             rows.append({"preset": preset, "period": name, **{k: st.get(k) for k in (
                 "trades", "win_rate", "profit_factor", "net", "max_dd", "pass_rate", "fail_rate",
                 "zero_edge_pass_rate", "median_days_to_pass", "funded_any_payout",
-                "funded_avg_withdrawn")}})
-        if preset == "topstep_50k":
+                "funded_avg_payouts", "funded_avg_withdrawn", "funded_blown")}})
+        if preset == "lucidflex_50k":
             pd.DataFrame([asdict(t) for t in run(sessions, p)]).to_csv(
                 os.path.join(args.out, "trades_recommended.csv"), index=False)
 
