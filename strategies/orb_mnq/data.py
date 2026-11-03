@@ -3,8 +3,8 @@
 MNQ and NQ trade the same index at the same price; only the dollar value per
 point differs (MNQ $2, NQ $20). So NQ 1-minute history is a valid MNQ tape.
 
-Expected CSV columns: a timestamp column in US/Eastern time plus
-open, high, low, close, volume. Timestamps may label the bar's START or END
+Expected CSV or parquet columns: a timestamp column in US/Eastern time plus
+open, high, low, close, volume (any capitalisation). Timestamps may label the bar's START or END
 minute; pass ``label="end"`` when a 09:31 bar holds the 09:30-09:31 trades
 (the usual export from NinjaTrader / Sierra / many vendors).
 """
@@ -39,8 +39,10 @@ class Session:
 
 
 def load_bars(path: str, label: str = "end", ts_col: str | None = None) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df.columns = [c.strip() for c in df.columns]
+    df = pd.read_parquet(path) if str(path).endswith(".parquet") else pd.read_csv(path)
+    df.columns = [c.strip().lower() for c in df.columns]
+    if ts_col:
+        ts_col = ts_col.lower()
     ts_col = ts_col or next(c for c in df.columns if "time" in c.lower() or "date" in c.lower())
     ts = pd.to_datetime(df[ts_col], format="mixed")
     if label == "end":

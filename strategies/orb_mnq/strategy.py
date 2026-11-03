@@ -51,6 +51,8 @@ class ORBParams:
     vwap_filter: bool = True
     trend_filter: bool = False
     news: frozenset = field(default_factory=frozenset)
+    blocked: frozenset = field(default_factory=frozenset)  # regime-gate days (GARCH, HMM...)
+    slope_len: int = 0  # linear-regression slope filter on 1m closes (0 = off)
     max_trades: int = 1
     direction: str = "both"  # "both", "long", "short"
     # sizing and costs
@@ -62,6 +64,7 @@ class ORBParams:
     def label(self) -> str:
         d = asdict(self)
         d.pop("news")
+        d.pop("blocked")
         return ", ".join(f"{k}={v}" for k, v in d.items())
 
 
@@ -81,6 +84,7 @@ class Trade:
     mae: float  # worst open-trade dollars (<= 0), costs included
     mfe: float  # best open-trade dollars (>= 0), costs included
     reason: str  # "stop", "target", "time", "breakeven"
+    risk_per_ct: float = 0.0  # dollars at risk per contract incl. costs (for re-sizing)
 
 
 def _first(mask: np.ndarray) -> int:
@@ -128,7 +132,7 @@ def _simulate_exit(s: Session, k: int, side: int, entry: float, stop: float, tar
 
 
 def run_session(s: Session, p: ORBParams) -> list[Trade]:
-    if s.day in p.news:
+    if s.day in p.news or s.day in p.blocked:
         return []
     or_end = p.or_start + p.or_minutes
     in_or = (s.minute >= p.or_start) & (s.minute < or_end)
@@ -170,6 +174,11 @@ def run_session(s: Session, p: ORBParams) -> list[Trade]:
             side = 0
         if side and trend and side != trend:
             side = 0
+        if side and p.slope_len and i + 1 >= p.slope_len:
+            y = s.close[i + 1 - p.slope_len:i + 1]
+            x = np.arange(p.slope_len) - (p.slope_len - 1) / 2.0
+            if float((x * (y - y.mean())).sum()) * side <= 0:  # slope must agree
+                side = 0
         if trades and side == trades[-1].side:  # 2nd trade must be the other way
             side = 0
         if not side:
@@ -209,6 +218,7 @@ def run_session(s: Session, p: ORBParams) -> list[Trade]:
             day=s.day, side=side, entry_min=int(s.minute[k]), exit_min=int(s.minute[x]),
             entry=entry, exit=px, stop=stop, target=target, contracts=contracts,
             pnl=pnl, r=pnl / (per_ct * contracts), mae=mae, mfe=mfe, reason=reason,
+            risk_per_ct=per_ct,
         ))
         if pnl > 0:
             break  # done for the day after a winner

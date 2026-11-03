@@ -88,8 +88,9 @@ def trades_by_day(trades: list[Trade]) -> dict[date, list[Trade]]:
 class Account:
     """Balance, trailing floor and daily-loss handling shared by both phases."""
 
-    def __init__(self, r: PropRules):
+    def __init__(self, r: PropRules, sizer=None):
         self.r = r
+        self.sizer = sizer  # optional: (account, trade) -> resized trade or None (skip)
         self.bal = r.start
         self.peak = r.start
         self.floor = r.start - r.max_dd
@@ -105,6 +106,10 @@ class Account:
         r = self.r
         day_start = self.bal
         for t in day_trades:
+            if self.sizer is not None:
+                t = self.sizer(self, t)
+                if t is None:
+                    continue
             dll_left = (self.bal - day_start) + r.daily_loss if r.daily_loss else np.inf
             worst = t.mae
             # daily loss limit liquidates the position at the limit
@@ -140,8 +145,8 @@ class EvalResult:
 
 
 def run_evaluation(days: list[date], tbd: dict[date, list[Trade]], start_idx: int,
-                   r: PropRules, max_days: int = 0) -> tuple[EvalResult, int]:
-    acct = Account(r)
+                   r: PropRules, max_days: int = 0, sizer=None) -> tuple[EvalResult, int]:
+    acct = Account(r, sizer)
     best_day = 0.0
     active = 0
     for j in range(start_idx, len(days)):
@@ -171,14 +176,14 @@ class FundedResult:
 
 
 def run_funded(days: list[date], tbd: dict[date, list[Trade]], start_idx: int,
-               r: PropRules, horizon: int = 120, risk_scale: float = 1.0) -> FundedResult:
+               r: PropRules, horizon: int = 120, risk_scale: float = 1.0, sizer=None) -> FundedResult:
     """Trade a funded account for up to ``horizon`` sessions, taking payouts.
 
     ``risk_scale`` resizes every trade (0.5 = half the evaluation risk), a
     common way to protect a funded account.
     """
     funded = r if r.funded_trail_lock is None else replace(r, trail_lock=r.funded_trail_lock)
-    acct = Account(funded)
+    acct = Account(funded, sizer)
     if risk_scale != 1.0:
         tbd = {d: [replace(t, pnl=t.pnl * risk_scale, mae=t.mae * risk_scale, mfe=t.mfe * risk_scale)
                    for t in ts] for d, ts in tbd.items()}
@@ -208,20 +213,25 @@ def run_funded(days: list[date], tbd: dict[date, list[Trade]], start_idx: int,
 
 
 def pass_rate(trades: list[Trade], days: list[date], r: PropRules, step: int = 1,
-              funded_horizon: int = 120, max_days: int = 40, funded_risk_scale: float = 1.0) -> dict:
+              funded_horizon: int = 120, max_days: int = 40, funded_risk_scale: float = 1.0,
+              make_sizer=None) -> dict:
     """Start a fresh evaluation on every ``step``-th session and report outcomes.
 
     ``max_days`` (default 40 sessions, about two months of evaluation fees)
     counts a slow evaluation as a non-pass; 0 lets it run until the data ends.
+    ``make_sizer`` (optional) builds a fresh per-account sizer, e.g. capped Kelly
+    on the drawdown buffer plus a risk guard (see ``quant.py``).
     """
     tbd = trades_by_day(trades)
     evals: list[EvalResult] = []
     funded: list[FundedResult] = []
     for i in range(0, len(days), step):
-        res, end_j = run_evaluation(days, tbd, i, r, max_days)
+        res, end_j = run_evaluation(days, tbd, i, r, max_days,
+                                    make_sizer() if make_sizer else None)
         evals.append(res)
         if res.outcome == "pass" and end_j + 1 + funded_horizon <= len(days):
-            funded.append(run_funded(days, tbd, end_j + 1, r, funded_horizon, funded_risk_scale))
+            funded.append(run_funded(days, tbd, end_j + 1, r, funded_horizon, funded_risk_scale,
+                                     make_sizer(funded=True) if make_sizer else None))
     closed = [e for e in evals if e.outcome != "open"]
     passed = [e for e in closed if e.outcome == "pass"]
     failed = [e for e in closed if e.outcome == "fail"]

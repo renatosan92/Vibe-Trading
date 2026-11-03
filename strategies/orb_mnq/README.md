@@ -81,6 +81,65 @@ the same payouts; at a quarter of the risk it survived longer but paid less.
 * 5- and 15-minute ranges and the midpoint stop were worse than the 30-minute
   range with the opposite-side stop.
 
+## Longer history: Sep 2020 to Nov 2025
+
+A second free NQ 1-minute file (back-adjusted continuous contract, bar-start
+timestamps, from github.com/hindsight-finance/Silver-Bullet-AM-Session) covers
+2020-09-01 to 2025-11-21. No free source for 2019 to Aug 2020 or for 2026 was
+reachable. LucidFlex 50K, $750 risk, 40-session evaluation limit:
+
+| Year | 09:30-10:00 PF | Pass | 09:00-09:30 PF | Pass |
+|---|---|---|---|---|
+| 2020 (Sep-Dec) | 0.92 | 4% | 0.87 | 14% |
+| 2021 | 1.34 | 31% | 1.11 | 28% |
+| 2022 | 1.26 | 49% | 1.23 | 45% |
+| 2023 | 1.20 | 46% | 1.04 | 30% |
+| 2024 | 1.62 | 56% | 1.24 | 32% |
+| 2025 | 1.13 | 40% | 1.35 | 46% |
+| All | 1.28 | 41% | 1.16 | 35% |
+
+2021-2022 were never used to choose settings; the 09:30 version held up there.
+
+## The maths guide applied (`quant.py`, `math_study.py`)
+
+Each stage of "How to Implement Mathematics into Algorithmic Trading" was
+added and tested on 2021-09 to 2025-11 (GARCH and the HMM need a year of
+history first). Everything fitted uses only earlier data.
+
+| Stage | What was added | 09:30-10:00 result | 09:00-09:30 result |
+|---|---|---|---|
+| 2 Diagnose | Hurst, Dickey-Fuller / OU half-life, AR(1) on 1m prices in the trading window | Hurst 0.39 = random-walk reference 0.39; DF significant on only 13% of days | Hurst 0.42 vs 0.39; DF significant on 3% of days |
+| 3 Gate | GARCH(1,1), refit monthly: trade only if sigma >= 0.8 x long-run | Pass 44% -> 22%, PF 1.30 -> 1.17. Hurts | Pass 38% -> 31%. Hurts |
+| 3 Gate | 2-state HMM, refit quarterly, P(regime) >= 0.7 | "Volatile" and "calm" each won in a different half of the sample. No stable edge | Same |
+| 4 Signal | Linear-regression slope must agree with the breakout | No change (PF 1.30) | Slightly worse |
+| 5-6 Size + guard | Capped Kelly (rolling 100 trades) on the remaining drawdown buffer; block if buffer - risk < 20% of the limit; sit out a day after 3 losses | Never fails, but 41% of evaluations stall when the buffer gets too small for 1 contract; passes take a median 127 sessions | 67% stall |
+| 7 Evaluate | Expectancy, p, b, Kelly f*, Sharpe, Sortino | +0.12R a trade, p 47%, b 1.47, f* 11%, Sharpe 1.5, Sortino 2.7 | +0.09R, p 31%, b 2.69, f* 5%, Sharpe 1.1 |
+| 8 Validate | t-stat, trades needed, deflated Sharpe (6,200 variants tried), Monte Carlo | t = 3.1 (passes the t >= 3 bar). Deflated Sharpe 0.27: after this many variants, a 1.5 Sharpe is within what luck produces | t = 2.4, deflated Sharpe 0.08: likely luck |
+
+Sizing comparison, 09:30-10:00, with up to 250 sessions to pass:
+
+| Sizing | Pass | Fail | Stalled | Median sessions to pass | Funded: any payout / avg to you / blown (250 sessions) |
+|---|---|---|---|---|---|
+| Fixed $750 (current) | 45% | 55% | 0% | 19 | 81% / $908 / 96% |
+| Fixed $250 | 68% | 12% | 20% | 176 | 65% / $404 / 1% |
+| Kelly 1x on buffer + guard | 59% | 0% | 41% | 127 | 62% / $404 / 0% |
+| Eval $750, funded on Kelly + guard | 44% | 54% | 3% | 18 | 84% / $489 / 0% |
+
+The guide's Monte Carlo rule (lower risk until bust < 10-15%) points to about
+$150 a trade, but a 30-minute MNQ range usually needs more than $150 for one
+micro, so it mostly cannot trade.
+
+**Verdict.** The guide's validation stages are the most useful part: they
+show the 09:30 edge is real but thin (t 3.1) and does not survive a
+multiple-testing correction, and the 09:00 version is probably noise. None of
+the gates or filters improved results, so the default strategy is unchanged.
+Kelly sizing with the guard trades speed for survival: it almost never blows
+an account but most attempts crawl. If the evaluation has no time limit and
+no monthly fee, fixed $250 or Kelly 1x passes more often than $750; if time
+costs money, $750 passes about as often and 10x faster. In the funded
+account, Kelly + guard kept every account alive for a year but paid about half
+as much as half-risk fixed sizing in that year.
+
 ## 09:00-09:30 range variant
 
 Set `or_start=-30, or_minutes=30` (Pine: "Range starts at" = 09:00) to use the
@@ -139,6 +198,7 @@ is what that file uses).
 python -m strategies.orb_mnq.report --data nq_1m.csv              # recommended settings
 python -m strategies.orb_mnq.report --data nq_1m.csv --risk 500   # other risk sizes
 python -m strategies.orb_mnq.run_backtest --data nq_1m.csv        # full grid search (about 15 min)
+python -m strategies.orb_mnq.math_study --data nq_1m.parquet --label start   # maths-guide study
 python -m strategies.orb_mnq.run_backtest --data nq_1m.csv --preset topstep_50k
 pytest strategies/orb_mnq/tests
 ```
@@ -163,6 +223,8 @@ the Python one on bars that touch both stop and target.
 | `news.py` | FOMC, CPI and jobs-report dates for 2023-2025 |
 | `run_backtest.py` | Grid search on the in-sample years, scored out of sample |
 | `report.py` | Recommended settings by year and preset, with the zero-edge baseline |
+| `quant.py` | GARCH, HMM, Hurst, Dickey-Fuller, Kelly sizer with risk guard, Monte Carlo, t-stat, deflated Sharpe |
+| `math_study.py` | Applies the maths guide to both range versions and prints the comparison |
 | `pine/mnq_orb.pine` | TradingView strategy |
 
 Backtests are not live results. Slippage around the open can be worse than one
