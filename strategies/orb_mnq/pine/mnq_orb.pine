@@ -1,0 +1,137 @@
+//@version=6
+// MNQ Opening Range Breakout, prop-firm sized.
+// Port of strategies/orb_mnq/strategy.py. Use on a 1-minute MNQ chart, exchange time
+// set to America/New_York (CME_MINI:MNQ1!). TradingView fills differ from the Python
+// fill model (it can fill the target first on a bar that touches both), so expect
+// slightly better numbers here than in the Python backtest.
+strategy("MNQ ORB (prop)", overlay = true, pyramiding = 0, calc_on_every_tick = false,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 0.75,
+     slippage = 1, default_qty_type = strategy.fixed, default_qty_value = 1)
+
+// ── Inputs (defaults = RECOMMENDED in report.py, chosen on 2023-2024) ──
+orMin      = input.int(30, "Opening range minutes", options = [5, 15, 30])
+confirmTf  = input.int(1, "Confirmation bar minutes", options = [1, 5])
+stopMode   = input.string("opposite", "Stop", options = ["opposite", "mid"])
+targetR    = input.float(2.0, "Target (R)", step = 0.5)
+beR        = input.float(1.0, "Move stop to break-even at (R, 0 = off)", step = 0.5)
+useVwap    = input.bool(false, "Require close on the right side of VWAP")
+maxOrFrac  = input.float(1.0, "Max OR width / 14-day avg range", step = 0.05)
+maxTrades  = input.int(1, "Max trades per day", minval = 1, maxval = 2)
+riskUsd    = input.float(750, "Risk per trade ($)")
+maxQty     = input.int(50, "Max contracts")
+lastEntry  = input.int(60, "No entries after open + N minutes")
+exitMin    = input.int(380, "Flatten at open + N minutes")
+skipNews   = input.bool(true, "Skip FOMC / CPI days (fill the list below)")
+newsDates  = input.string("2026-01-13,2026-01-28,2026-02-11,2026-03-11,2026-03-18", "News dates (yyyy-mm-dd, comma separated)")
+
+const float PV = 2.0 // MNQ $ per point
+
+// ── Session clock (minutes since 09:30 New York) ──
+tz = "America/New_York"
+mins = (hour(time, tz) * 60 + minute(time, tz)) - (9 * 60 + 30)
+inRth = mins >= 0 and mins < 390
+newDay = inRth and not inRth[1]
+
+ymd = str.format("{0,number,0000}-{1,number,00}-{2,number,00}", year(time, tz), month(time, tz), dayofmonth(time, tz))
+isNews = skipNews and str.contains(newsDates, ymd)
+
+// ── Daily range average for the width filter ──
+var float dHi = na
+var float dLo = na
+var array<float> ranges = array.new_float()
+if newDay
+    if not na(dHi)
+        array.push(ranges, dHi - dLo)
+        if array.size(ranges) > 14
+            array.shift(ranges)
+    dHi := high
+    dLo := low
+else if inRth
+    dHi := math.max(dHi, high)
+    dLo := math.min(dLo, low)
+avgRange = array.size(ranges) == 14 ? array.avg(ranges) : na
+
+// ── Opening range and VWAP ──
+var float orHi = na
+var float orLo = na
+var int tradesToday = 0
+var int lastSide = 0
+var bool dayDone = false
+if newDay
+    orHi := high
+    orLo := low
+    tradesToday := 0
+    lastSide := 0
+    dayDone := false
+else if inRth and mins < orMin
+    orHi := math.max(orHi, high)
+    orLo := math.min(orLo, low)
+
+vw = ta.vwap(hlc3, newDay)
+orReady = inRth and mins >= orMin
+widthOk = na(avgRange) or (orHi - orLo) / avgRange <= maxOrFrac
+
+// confirmation bar closes on the last 1m bar of each confirmTf block after the OR
+isConfirmBar = orReady and ((mins - orMin + 1) % confirmTf == 0)
+
+// ── Count closed trades from today ──
+if strategy.closedtrades > strategy.closedtrades[1]
+    lastPnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastPnl > 0
+        dayDone := true
+
+flat = strategy.position_size == 0
+canEnter = flat and isConfirmBar and mins < lastEntry and not dayDone and not isNews and widthOk and tradesToday < maxTrades
+
+longSig  = canEnter and close > orHi and (not useVwap or close > vw) and lastSide != 1
+shortSig = canEnter and close < orLo and (not useVwap or close < vw) and lastSide != -1
+
+var float stopPx = na
+var float tgtPx = na
+var float entryRef = na
+var float riskPts = na
+
+sizeFor(r) =>
+    perCt = r * PV + 1.5 + 0.25 * PV
+    math.min(maxQty, math.floor(riskUsd / perCt))
+
+if longSig
+    stp = stopMode == "mid" ? (orHi + orLo) / 2 : orLo
+    r = close - stp
+    q = sizeFor(r)
+    if r > 0 and q >= 1
+        stopPx := stp
+        entryRef := close
+        riskPts := r
+        tgtPx := close + targetR * r
+        strategy.entry("L", strategy.long, qty = q)
+        tradesToday += 1
+        lastSide := 1
+if shortSig
+    stp = stopMode == "mid" ? (orHi + orLo) / 2 : orHi
+    r = stp - close
+    q = sizeFor(r)
+    if r > 0 and q >= 1
+        stopPx := stp
+        entryRef := close
+        riskPts := r
+        tgtPx := close - targetR * r
+        strategy.entry("S", strategy.short, qty = q)
+        tradesToday += 1
+        lastSide := -1
+
+// break-even move
+if strategy.position_size > 0 and beR > 0 and high >= entryRef + beR * riskPts
+    stopPx := math.max(stopPx, strategy.position_avg_price)
+if strategy.position_size < 0 and beR > 0 and low <= entryRef - beR * riskPts
+    stopPx := math.min(stopPx, strategy.position_avg_price)
+
+strategy.exit("XL", "L", stop = stopPx, limit = tgtPx)
+strategy.exit("XS", "S", stop = stopPx, limit = tgtPx)
+
+if inRth and mins >= exitMin - 1
+    strategy.close_all(comment = "time")
+
+plot(inRth and mins >= orMin ? orHi : na, "OR high", color.new(color.teal, 0), style = plot.style_linebr)
+plot(inRth and mins >= orMin ? orLo : na, "OR low", color.new(color.red, 0), style = plot.style_linebr)
+plot(inRth ? vw : na, "VWAP", color.new(color.orange, 30), style = plot.style_linebr)
