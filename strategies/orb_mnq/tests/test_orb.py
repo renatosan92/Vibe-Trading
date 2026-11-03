@@ -113,3 +113,18 @@ def test_lucidflex_floor_locks_at_50100_and_resets_after_payout():
     res = run_funded(days, tbd, 0, r, horizon=7)
     # 5 days of +$400 = $2,000 profit -> request 50% = $1,000, trader keeps 90%
     assert res.payouts == 1 and res.withdrawn == 900
+
+
+def test_pre_open_range_0900_0930():
+    # 30 pre-open bars (minute -30..-1) set the range 95-105; entries start at 09:30
+    pre = [(100.0, 105.0, 95.0, 100.0)] * 30
+    rth = [(104, 106.5, 104, 106), (106, 110, 105, 109), (109, 129, 108, 128)]
+    n = 390 + 30
+    bars = pre + rth + [rth[-1][3:] * 4] * (n - len(pre) - len(rth))
+    o, h, l, c = (np.array(x, dtype=float) for x in zip(*bars))
+    s = Session(day=date(2024, 3, 4), minute=np.arange(-30, 390), open=o, high=h, low=l, close=c,
+                volume=np.ones(n), vwap=np.full(n, 100.0), prior_close=np.nan,
+                prior_range_avg=np.nan, ema20_prior=np.nan)
+    p = ORBParams(**{**P.__dict__, "or_start": -30, "or_minutes": 30})
+    (t,) = run_session(s, p)
+    assert t.side == 1 and t.stop == 95 and t.entry_min == 1 and t.reason == "target"

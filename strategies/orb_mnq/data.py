@@ -26,13 +26,13 @@ class Session:
     """One regular-trading-hours day as plain numpy arrays (bar-start minutes)."""
 
     day: date
-    minute: np.ndarray  # minutes since 09:30 for each bar start (0 = 09:30)
+    minute: np.ndarray  # minutes since 09:30 for each bar start (0 = 09:30, negative = pre-open)
     open: np.ndarray
     high: np.ndarray
     low: np.ndarray
     close: np.ndarray
     volume: np.ndarray
-    vwap: np.ndarray  # running RTH VWAP at each bar's close
+    vwap: np.ndarray  # running RTH VWAP at each bar's close (nan before 09:30)
     prior_close: float  # previous session's RTH close (nan for the first day)
     prior_range_avg: float  # mean RTH high-low of the prior 14 sessions (nan early)
     ema20_prior: float  # 20-day EMA of RTH closes up to the previous session
@@ -58,12 +58,18 @@ def load_bars(path: str, label: str = "end", ts_col: str | None = None) -> pd.Da
     return out.sort_values("ts").drop_duplicates("ts").reset_index(drop=True)
 
 
-def build_sessions(bars: pd.DataFrame, min_bars: int = 300) -> list[Session]:
-    """Cut the tape into RTH sessions. Half days and broken days are dropped."""
-    t = bars["ts"].dt.time
-    rth = bars[(t >= RTH_OPEN) & (t < RTH_CLOSE)].copy()
-    rth["day"] = rth["ts"].dt.date
-    rth["minute"] = (rth["ts"].dt.hour * 60 + rth["ts"].dt.minute) - (9 * 60 + 30)
+def build_sessions(bars: pd.DataFrame, min_bars: int = 300, pre_minutes: int = 30) -> list[Session]:
+    """Cut the tape into RTH sessions. Half days and broken days are dropped.
+
+    Each session also carries the ``pre_minutes`` before 09:30 (negative
+    ``minute`` values) so a pre-open range such as 09:00-09:30 can be used.
+    Daily range, prior close and EMA context are computed from RTH bars only.
+    """
+    allm = (bars["ts"].dt.hour * 60 + bars["ts"].dt.minute) - (9 * 60 + 30)
+    ext = bars[(allm >= -pre_minutes) & (allm < 390)].copy()
+    ext["day"] = ext["ts"].dt.date
+    ext["minute"] = allm[ext.index]
+    rth = ext[ext["minute"] >= 0]
 
     daily = rth.groupby("day").agg(
         close=("close", "last"), high=("high", "max"), low=("low", "min"), n=("close", "size")
@@ -74,12 +80,17 @@ def build_sessions(bars: pd.DataFrame, min_bars: int = 300) -> list[Session]:
     daily["ema20_prior"] = daily["close"].ewm(span=20, adjust=False).mean().shift(1)
 
     sessions: list[Session] = []
-    for day, g in rth.groupby("day", sort=True):
-        if len(g) < min_bars or g["minute"].iloc[0] != 0:
+    for day, g in ext.groupby("day", sort=True):
+        m = g["minute"].values
+        if (m >= 0).sum() < min_bars or 0 not in m:
+            continue
+        if pre_minutes and m[0] > -pre_minutes + 5:  # pre-open window mostly missing
             continue
         typical = (g["high"].values + g["low"].values + g["close"].values) / 3.0
-        vol = np.maximum(g["volume"].values, 1.0)
-        vwap = np.cumsum(typical * vol) / np.cumsum(vol)
+        vol = np.where(m >= 0, np.maximum(g["volume"].values, 1.0), 0.0)
+        cum_v = np.cumsum(vol)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            vwap = np.where(cum_v > 0, np.cumsum(typical * vol) / cum_v, np.nan)
         d = daily.loc[day]
         sessions.append(
             Session(

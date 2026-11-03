@@ -1,7 +1,8 @@
 //@version=6
 // MNQ Opening Range Breakout, prop-firm sized.
 // Port of strategies/orb_mnq/strategy.py. Use on a 1-minute MNQ chart, exchange time
-// set to America/New_York (CME_MINI:MNQ1!). TradingView fills differ from the Python
+// set to America/New_York (CME_MINI:MNQ1!). For the 09:00 range start, the chart must
+// show extended hours (ETH), or the 09:00-09:30 bars will be missing. TradingView fills differ from the Python
 // fill model (it can fill the target first on a bar that touches both), so expect
 // slightly better numbers here than in the Python backtest.
 strategy("MNQ ORB (prop)", overlay = true, pyramiding = 0, calc_on_every_tick = false,
@@ -9,6 +10,7 @@ strategy("MNQ ORB (prop)", overlay = true, pyramiding = 0, calc_on_every_tick = 
      slippage = 1, default_qty_type = strategy.fixed, default_qty_value = 1)
 
 // ── Inputs (defaults = RECOMMENDED in report.py, chosen on 2023-2024) ──
+rangeStart = input.string("09:30", "Range starts at (New York)", options = ["09:00", "09:30"])
 orMin      = input.int(30, "Opening range minutes", options = [5, 15, 30])
 confirmTf  = input.int(1, "Confirmation bar minutes", options = [1, 5])
 stopMode   = input.string("opposite", "Stop", options = ["opposite", "mid"])
@@ -31,6 +33,10 @@ tz = "America/New_York"
 mins = (hour(time, tz) * 60 + minute(time, tz)) - (9 * 60 + 30)
 inRth = mins >= 0 and mins < 390
 newDay = inRth and not inRth[1]
+orStart = rangeStart == "09:00" ? -30 : 0
+orEnd = orStart + orMin
+inOr = mins >= orStart and mins < orEnd
+orBegin = inOr and not inOr[1]
 
 ymd = str.format("{0,number,0000}-{1,number,00}-{2,number,00}", year(time, tz), month(time, tz), dayofmonth(time, tz))
 isNews = skipNews and str.contains(newsDates, ymd)
@@ -57,22 +63,23 @@ var float orLo = na
 var int tradesToday = 0
 var int lastSide = 0
 var bool dayDone = false
-if newDay
+if orBegin
     orHi := high
     orLo := low
     tradesToday := 0
     lastSide := 0
     dayDone := false
-else if inRth and mins < orMin
+else if inOr
     orHi := math.max(orHi, high)
     orLo := math.min(orLo, low)
 
 vw = ta.vwap(hlc3, newDay)
-orReady = inRth and mins >= orMin
+scanStart = math.max(orEnd, 0) // entries only from 09:30 on
+orReady = inRth and mins >= scanStart
 widthOk = na(avgRange) or (orHi - orLo) / avgRange <= maxOrFrac
 
 // confirmation bar closes on the last 1m bar of each confirmTf block after the OR
-isConfirmBar = orReady and ((mins - orMin + 1) % confirmTf == 0)
+isConfirmBar = orReady and ((mins - scanStart + 1) % confirmTf == 0)
 
 // ── Count closed trades from today ──
 if strategy.closedtrades > strategy.closedtrades[1]
@@ -132,6 +139,6 @@ strategy.exit("XS", "S", stop = stopPx, limit = tgtPx)
 if inRth and mins >= exitMin - 1
     strategy.close_all(comment = "time")
 
-plot(inRth and mins >= orMin ? orHi : na, "OR high", color.new(color.teal, 0), style = plot.style_linebr)
-plot(inRth and mins >= orMin ? orLo : na, "OR low", color.new(color.red, 0), style = plot.style_linebr)
+plot(inRth and mins >= scanStart ? orHi : na, "OR high", color.new(color.teal, 0), style = plot.style_linebr)
+plot(inRth and mins >= scanStart ? orLo : na, "OR low", color.new(color.red, 0), style = plot.style_linebr)
 plot(inRth ? vw : na, "VWAP", color.new(color.orange, 30), style = plot.style_linebr)

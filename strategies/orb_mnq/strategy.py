@@ -2,7 +2,9 @@
 
 Rules (every one is a parameter in ``ORBParams``):
 
-1. Opening range (OR) = high/low of the first ``or_minutes`` of the 09:30 ET session.
+1. Opening range (OR) = high/low of the ``or_minutes`` starting at ``or_start``
+   minutes after 09:30 ET (``or_start=-30, or_minutes=30`` = the 09:00-09:30 range).
+   Entries are only taken from 09:30 on.
 2. Skip the day if it is a news day, or if the OR is too small or too large
    relative to the average daily range of the prior 14 sessions.
 3. Breakout = a ``confirm_tf``-minute bar CLOSES above the OR high (long) or
@@ -37,6 +39,7 @@ POINT_VALUE = 2.0  # MNQ: $2 per index point (NQ is $20)
 @dataclass(frozen=True)
 class ORBParams:
     or_minutes: int = 15
+    or_start: int = 0  # minutes after 09:30 the range starts (-30 = 09:00)
     confirm_tf: int = 5  # minutes per confirmation bar (1 = any 1m close)
     last_entry: int = 90  # no new entries after 09:30 + this many minutes (11:00)
     exit_minute: int = 380  # flatten at 09:30 + 380 = 15:50
@@ -127,9 +130,14 @@ def _simulate_exit(s: Session, k: int, side: int, entry: float, stop: float, tar
 def run_session(s: Session, p: ORBParams) -> list[Trade]:
     if s.day in p.news:
         return []
-    n_or = p.or_minutes
-    or_hi = float(s.high[:n_or].max())
-    or_lo = float(s.low[:n_or].min())
+    or_end = p.or_start + p.or_minutes
+    in_or = (s.minute >= p.or_start) & (s.minute < or_end)
+    if not in_or.any():
+        return []
+    or_hi = float(s.high[in_or].max())
+    or_lo = float(s.low[in_or].min())
+    rth0 = int(np.searchsorted(s.minute, 0, side="left"))
+    scan0 = int(np.searchsorted(s.minute, max(or_end, 0), side="left"))
     width = or_hi - or_lo
     if width <= 0:
         return []
@@ -141,11 +149,11 @@ def run_session(s: Session, p: ORBParams) -> list[Trade]:
     end = int(np.searchsorted(s.minute, p.exit_minute, side="left"))
     trend = 0
     if p.trend_filter and not np.isnan(s.ema20_prior):
-        trend = 1 if s.open[0] > s.ema20_prior else -1
+        trend = 1 if s.open[rth0] > s.ema20_prior else -1
 
     trades: list[Trade] = []
     tf = p.confirm_tf
-    i = n_or + tf - 1  # index of the 1m bar whose close ends the first confirm bar
+    i = scan0 + tf - 1  # index of the 1m bar whose close ends the first confirm bar
     slip = p.slippage_ticks * TICK
     while i < end - 1 and len(trades) < p.max_trades:
         if s.minute[i] >= p.last_entry:
@@ -206,7 +214,7 @@ def run_session(s: Session, p: ORBParams) -> list[Trade]:
             break  # done for the day after a winner
         # resume scanning from the next confirmation bar after the exit
         i = x + 1
-        offset = (i - (n_or - 1)) % tf
+        offset = (i - (scan0 - 1)) % tf
         i += (tf - offset) % tf
     return trades
 

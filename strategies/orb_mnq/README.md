@@ -81,6 +81,29 @@ the same payouts; at a quarter of the risk it survived longer but paid less.
 * 5- and 15-minute ranges and the midpoint stop were worse than the 30-minute
   range with the opposite-side stop.
 
+## 09:00-09:30 range variant
+
+Set `or_start=-30, or_minutes=30` (Pine: "Range starts at" = 09:00) to use the
+half hour before the open as the range, with entries from 09:30. Same exit
+rules, LucidFlex 50K, $750 risk:
+
+| Range | Year | Win rate | Profit factor | Net | Max drawdown | Pass | Fail | Median days to pass |
+|---|---|---|---|---|---|---|---|---|
+| 09:30-10:00 | 2023 | 45% | 1.20 | $9,502 | $4,514 | 45% | 53% | 19 |
+| 09:30-10:00 | 2024 | 48% | 1.63 | $24,854 | $4,376 | 56% | 44% | 15 |
+| 09:30-10:00 | 2025 | 48% | 1.13 | $4,892 | $4,892 | 38% | 56% | 21 |
+| 09:00-09:30 | 2023 | 26% | 1.01 | $460 | $11,531 | 29% | 71% | 10 |
+| 09:00-09:30 | 2024 | 32% | 1.24 | $18,736 | $16,650 | 33% | 67% | 6 |
+| 09:00-09:30 | 2025 | 34% | 1.36 | $24,912 | $5,560 | 46% | 54% | 8 |
+
+The pre-open range is narrower, so the stop is tighter and the position about
+twice as large (8 micros on average instead of 3-4). The opening spike at 09:30
+stops it out often, which gives a ~30% win rate and much deeper drawdowns. It
+was the better range in 2025 and the worse one in 2023-24. Tuning its other
+settings on 2023-24 picked a 1R target and 5-minute confirmation that broke even
+in 2025, so there is no stable edge to tune. The 09:30-10:00 range stays the
+default.
+
 ## Prop rules modelled
 
 All presets in `propfirm.py` approximate published 50K plans; `lucidflex_50k`
